@@ -4,3 +4,16 @@ apify-client>=1.0.0
 google-generativeai>=0.3.0
 python-dotenv>=1.0.0
 pandas>=2.0.0
+streamlit
+pandas
+apify-client
+google-generativeai
+python-dotenv
+sqlalchemy
+psycopg2-binary
+pgvector       <-- Для базы данных
+torch          <-- Для CLIP
+transformers   <-- Для CLIP
+pillow         <-- Обработка картинок
+requests
+numpy          <-- Математика векторов
