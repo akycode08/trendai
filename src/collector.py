@@ -1,6 +1,7 @@
 import os
 from typing import List
 from apify_client import ApifyClient
+from src.adapter import adapt_apidojo_to_standard
 
 class TikTokCollector:
     def __init__(self):
@@ -10,37 +11,70 @@ class TikTokCollector:
             self.client = None
         else:
             self.client = ApifyClient(token)
+            
+        # Используем Apidojo
+        self.actor_id = "apidojo/tiktok-scraper"
 
-    def collect(self, keywords: List[str], limit_per_keyword: int = 30):
-        if not self.client or not keywords:
+    def collect(self, targets: List[str], limit: int = 20, mode: str = "search"):
+        """
+        targets: список слов (для поиска) или никнеймов (для профиля)
+        mode: "search" или "profile"
+        """
+        if not self.client or not targets:
             return []
 
-        # Общий лимит
-        total_max_items = len(keywords) * limit_per_keyword
-        
-        print(f"📡 Collector: Запрос Apify. Слов: {len(keywords)}. Лимит: {total_max_items}")
+        print(f"📡 Collector: Режим '{mode}' для {targets}. Лимит: {limit}")
 
         run_input = {
-            "searchQueries": keywords,
-            "resultsPerPage": limit_per_keyword, 
-            "maxItems": total_max_items,
-            "sortType": 0,  # 0 = Relevance (лучший баланс свежести и качества)
-            "scrapeComments": False,
-            "scrapeDescriptions": True,
-            # Нам критически важно получить данные автора (подписчики)
+            "maxItems": limit,
+            # Доп. настройки для стабильности
+            "resultsPerPage": limit, 
         }
 
-        try:
-            actor = self.client.actor("clockworks/tiktok-scraper")
-            run = actor.call(run_input=run_input)
+        # --- ЛОГИКА ПЕРЕКЛЮЧЕНИЯ ---
+        if mode == "profile":
+            # ВАРИАНТ 3 (ПОБЕДНЫЙ): startUrls как список СТРОК
+            urls = []
+            for t in targets:
+                # 1. Чистим никнейм
+                clean_nick = t.strip().replace("@", "").replace("https://www.tiktok.com/", "").strip("/")
+                # 2. Формируем полную ссылку
+                full_url = f"https://www.tiktok.com/@{clean_nick}"
+                # 3. Добавляем СТРОКУ (не словарь!)
+                urls.append(full_url)
             
-            if not run: return []
+            # Кладем в startUrls (это проходит валидацию)
+            run_input["startUrls"] = urls
+            
+        else:
+            # РЕЖИМ ПОИСКА
+            run_input["keywords"] = targets
+            run_input["searchSection"] = "top"
+            run_input["startUrls"] = []
+
+        try:
+            # Запускаем актера
+            run = self.client.actor(self.actor_id).call(run_input=run_input)
+            
+            if not run: 
+                print("⚠️ Apify вернул пустой run.")
+                return []
 
             dataset = self.client.dataset(run["defaultDatasetId"])
-            items = list(dataset.iterate_items())
             
-            print(f"✅ Collector: Скачано {len(items)} сырых видео.")
-            return items
+            # Получаем сырые данные
+            raw_items = list(dataset.iterate_items())
+            print(f"📦 Apidojo вернул {len(raw_items)} сырых записей.")
+            
+            final_items = []
+            for item in raw_items:
+                # Прогоняем через адаптер
+                std_item = adapt_apidojo_to_standard(item)
+                if std_item:
+                    final_items.append(std_item)
+            
+            print(f"✅ Адаптировано {len(final_items)} видео.")
+            return final_items
 
         except Exception as exc:
             print(f"⚠️ Ошибка Apify: {exc}")

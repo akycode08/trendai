@@ -1,77 +1,70 @@
-import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta
+import re
 from typing import List
 
 class ViralContentFilter:
-    def __init__(self, business_keywords: List[str] = None):
+    def __init__(self, business_keywords: List[str] = None, is_profile_mode: bool = False):
+        """
+        is_profile_mode: Если True, отключаем жесткие фильтры по просмотрам
+        """
         self.business_keywords = set(k.lower() for k in (business_keywords or []))
+        self.is_profile_mode = is_profile_mode 
         
-        # Настройки фильтрации
+        # Настройки фильтрации (Работают только в режиме поиска)
         self.min_views_fresh = 1000       # Для свежих (<48ч)
-        self.min_likes_recent = 1000      # Для видео за 2 месяца (снизил до 1000, чтобы не терять микро-тренды)
-        self.min_views_timeless = 500000  # Миллионники (от 500к)
+        self.min_likes_recent = 1000      # Для видео за 2 месяца
+        self.min_views_timeless = 100000  # Миллионники
         
-        # Векторный порог (оставляем мягким, чтобы не выкинуть лишнее)
-        self.min_similarity = 0.2
-
     def filter_content(self, raw_items: List[dict]) -> List[dict]:
-        """Этап 1: Фильтрация по дате и просмотрам (Hard Filters)"""
         filtered = []
-        current_dt = datetime.now(timezone.utc)
-        
-        print(f"🧹 Filter: Анализ {len(raw_items)} видео...")
+        now = datetime.now()
+        print(f"🧹 Filter: Анализ {len(raw_items)} видео (Profile Mode: {self.is_profile_mode})...")
 
         for item in raw_items:
-            # 1. ПАРСИНГ ДАТЫ
-            created_at = None
-            iso_date = item.get("createTimeISO")
-            if iso_date:
-                try:
-                    created_at = datetime.fromisoformat(iso_date.replace("Z", "+00:00"))
-                except ValueError:
-                    pass
+            # 1. Проверка структуры (обязательно должна быть ссылка и автор)
+            if not item.get("webVideoUrl"):
+                continue
+
+            # --- ЕСЛИ ЭТО ПРОФИЛЬ КОНКУРЕНТА - БЕРЕМ ПОЧТИ ВСЁ ---
+            if self.is_profile_mode:
+                # Можно добавить минимальный порог, чтобы совсем мусор не брать (например, 100 просмотров)
+                if item.get("playCount", 0) > 0:
+                    filtered.append(item)
+                continue
+            # -----------------------------------------------------
+
+            # ДАЛЕЕ ИДЕТ СТАНДАРТНАЯ ЛОГИКА ДЛЯ ПОИСКА ТРЕНДОВ
+            views = item.get("playCount", 0)
+            likes = item.get("diggCount", 0)
+            create_time = item.get("createTime", 0)
             
-            if not created_at:
-                ts = item.get("createTime")
-                if ts:
-                    if ts > 10000000000: ts = ts / 1000
-                    created_at = datetime.fromtimestamp(ts, timezone.utc)
+            # Дата создания
+            try:
+                created_at = datetime.fromtimestamp(create_time)
+                age = now - created_at
+            except:
+                age = timedelta(days=365) # Если даты нет, считаем старым
 
-            if not created_at: continue
-
-            # Считаем возраст
-            age_days = (current_dt - created_at).days
-            age_hours = (current_dt - created_at).total_seconds() / 3600
-
-            # 2. ПОЛУЧЕНИЕ ДАННЫХ
-            stats = item.get("stats", {})
-            views = int(item.get("playCount") or stats.get("playCount", 0))
-            likes = int(item.get("diggCount") or stats.get("diggCount", 0))
-
-            # --- 3. НОВАЯ ЛОГИКА (БЕЗ ДИНОЗАВРОВ) ---
-            is_good = False
+            # Логика виральности
+            is_viral = False
             
-            # ПРАВИЛО 1: "Хит Года" (Было: Бессмертный)
-            # Теперь берем миллионники, только если они вышли в течение ГОДА (365 дней)
-            if views >= self.min_views_timeless and age_days <= 365:
-                is_good = True
+            # A. Свежий вирус (до 48 часов)
+            if age <= timedelta(hours=48):
+                if views >= self.min_views_fresh:
+                    is_viral = True
+            
+            # B. Недавний тренд (до 60 дней)
+            elif age <= timedelta(days=60):
+                if likes >= self.min_likes_recent:
+                    is_viral = True
+                    
+            # C. Вечная классика (любая дата)
+            else:
+                if views >= self.min_views_timeless:
+                    is_viral = True
 
-            # ПРАВИЛО 2: "Актуальный тренд" (2 месяца)
-            # Видео средней популярности, но свежее
-            elif age_days <= 60 and likes >= self.min_likes_recent:
-                is_good = True
-
-            # ПРАВИЛО 3: "Свежая ракета" (48 часов)
-            # Совсем новые видео, которые только начали расти
-            elif age_hours <= 48 and views >= self.min_views_fresh:
-                is_good = True
-
-            if is_good:
+            if is_viral:
                 filtered.append(item)
-            
+
         print(f"🧹 Filter: Оставлено {len(filtered)} видео.")
         return filtered
-
-    def check_similarity(self, similarity_score: float) -> bool:
-        """Этап 2: Проверка на релевантность бизнесу"""
-        return similarity_score >= self.min_similarity

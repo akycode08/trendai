@@ -1,130 +1,219 @@
-import pandas as pd
 import streamlit as st
-import time
-import plotly.express as px
-from datetime import timedelta
-from dotenv import load_dotenv
+import pandas as pd
+from datetime import datetime, timedelta
+from database import get_db_session, Trend
+from main import run_analysis
+import urllib.parse
 
-load_dotenv()
+st.set_page_config(page_title="TrendScout", layout="wide", page_icon="🔥")
 
-from database import Trend, get_db_session
-from main import run_analysis 
-
-# --- ФУНКЦИИ ---
-def load_runs(session):
-    rows = session.query(Trend.run_id).distinct().order_by(Trend.run_id.desc()).all()
-    return [r[0] for r in rows]
-
-def fetch_data(session, selected_run):
-    query = session.query(Trend)
-    if selected_run:
-        query = query.filter(Trend.run_id == selected_run)
-    return query.all()
-
-def prepare_df(data):
-    if not data: return pd.DataFrame()
-    return pd.DataFrame([
-        {
-            "UTS": round(t.transfer_score, 2),
-            "S (Схожесть)": round(t.similarity, 2),
-            "R (Охват)": round(t.normalized_reach, 2),
-            "Просмотры": (t.stats or {}).get('views', 0),
-            "Подписчики": t.followers,
-            "AI Суть": t.ai_summary if t.ai_summary != "AI Error" else t.description[:50],
-            "Ссылка": t.url,
-            "created_at": t.created_at # Важно для разделения!
-        }
-        for t in data
-    ])
-
-# --- ИНТЕРФЕЙС ---
-def render_dashboard():
-    st.set_page_config(page_title="TrendScout UTS", page_icon="🎯", layout="wide")
-    st.markdown("""
-        <style>
-        .block-container {padding-top: 1rem;}
-        h3 {color: #FF4B4B;} 
-        </style>
-    """, unsafe_allow_html=True)
-
-    st.title("🎯 TrendScout — Double View")
-
-    session = get_db_session()
+st.markdown("""
+<style>
+    div[data-testid="stVerticalBlock"] > div[style*="background-color"] {
+        border-radius: 15px; padding: 10px;
+    }
+    .stButton>button {width: 100%; border-radius: 8px;}
     
-    # === SIDEBAR ===
-    with st.sidebar:
-        st.header("🔍 Новый поиск")
-        with st.form("search_form"):
-            keywords_input = st.text_area("Темы:", value="Спортивное питание", height=70)
-            business_desc = st.text_area("Визуальное описание бизнеса:", value="Aesthetic gym, protein shaker, workout", height=100)
-            if st.form_submit_button("🚀 ЗАПУСК (Гибрид)", type="primary"):
-                keywords = [k.strip() for k in keywords_input.splitlines() if k.strip()]
-                if keywords:
-                    st.info("Этап 1: Ищем в базе... Этап 2: Идем в Apify...")
-                    run_analysis(keywords, business_desc=business_desc)
-                    st.success("Готово!")
-                    time.sleep(0.5)
-                    st.rerun()
+    /* Стили для изображений */
+    div[data-testid="stImage"] img { 
+        border-radius: 12px; object-fit: cover; 
+    }
+    a { text-decoration: none; color: inherit; }
+</style>
+""", unsafe_allow_html=True)
 
-        st.divider()
-        all_runs = load_runs(session)
-        selected_run = st.selectbox("История:", all_runs, index=0 if all_runs else None)
+# === ПОМОЩНИК: Рендер картинки (С ФИКСОМ HEIC -> JPEG) ===
+def render_safe_image(url, height=None):
+    if not url:
+        st.markdown("⬛ *Нет фото*")
+        return
+
+    # Мы используем сервис wsrv.nl.
+    # Он скачивает картинку с серверов TikTok (обходит защиту 403)
+    # И конвертирует HEIC/WEBP в обычный JPG на лету.
+    try:
+        # 1. Кодируем ссылку, чтобы спецсимволы не сломали запрос
+        encoded_url = urllib.parse.quote(url, safe='')
         
-        if st.button("🗑️ Очистить базу"):
-            session.query(Trend).delete()
-            session.commit()
-            st.rerun()
+        # 2. Формируем ссылку через прокси
+        # output=jpg -> превратить в JPG
+        # q=80 -> качество 80% для скорости
+        final_src = f"https://wsrv.nl/?url={encoded_url}&output=jpg&q=80"
+    except:
+        final_src = url # Если вдруг ошибка, пробуем оригинал
 
-    if not selected_run:
-        st.info("База пуста.")
-        return
-
-    # === РАЗДЕЛЕНИЕ ДАННЫХ ===
-    data = fetch_data(session, selected_run)
-    df = prepare_df(data)
+    # Настройка высоты (если передана)
+    style_height = f"height: {height}px;" if height else ""
     
-    if df.empty:
-        st.warning("Нет данных.")
-        return
+    # 3. Рисуем через HTML
+    html_code = f'<img src="{final_src}" style="{style_height} width: 100%; border-radius: 12px; object-fit: cover;" loading="lazy">'
+    st.markdown(html_code, unsafe_allow_html=True)
 
-    # Логика разделения: "Новые" - это те, что созданы в последние 10 минут от времени запуска
-    # Но так как run_id - это строка, возьмем просто max(created_at) как точку отсчета
-    latest_time = df['created_at'].max()
-    time_threshold = latest_time - timedelta(minutes=10)
+# === 1. ФУНКЦИЯ ДЛЯ ОБЫЧНОЙ СЕТКИ (Остальные видео) ===
+def render_grid(items):
+    cols = st.columns(3)
+    for i, item in enumerate(items):
+        with cols[i % 3]:
+            with st.container(border=True):
+                # Логика извлечения данных
+                if isinstance(item, dict):
+                    cover = item.get("cover_url")
+                    views = item["stats"].get("views", 0)
+                    likes = item["stats"].get("likes", 0)
+                    desc = item.get("description", "")
+                    url = item.get("url")
+                    score = None
+                else:
+                    cover = item.cover_url 
+                    views = item.stats.get("views", 0)
+                    likes = item.stats.get("likes", 0)
+                    desc = item.description
+                    url = item.url
+                    score = item.uts_score
 
-    # Две таблицы
-    df_fresh = df[df['created_at'] > time_threshold]
-    df_archive = df[df['created_at'] <= time_threshold]
+                # 🔥 ИСПОЛЬЗУЕМ БЕЗОПАСНЫЙ РЕНДЕР
+                render_safe_image(cover, height=200)
+                
+                # Метрики
+                c1, c2 = st.columns(2)
+                c1.markdown(f"👁 **{views:,}**")
+                c2.markdown(f"❤️ **{likes:,}**")
+                
+                if score: st.caption(f"📈 Score: {score:.2f}")
+                
+                # Кнопка
+                st.link_button("▶️ Смотреть", url)
 
-    # === МЕТРИКИ ОБЩИЕ ===
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Всего найдено", len(df))
-    c2.metric("🆕 Свежих (Apify)", len(df_fresh))
-    c3.metric("🗄️ Из Архива (DB)", len(df_archive))
-
-    # === ТАБЛИЦА 1: СВЕЖИЕ ===
-    st.subheader("🔥 Свежие находки (Только что скачали)")
-    if not df_fresh.empty:
-        st.dataframe(
-            df_fresh.drop(columns=["created_at"]),
-            use_container_width=True,
-            hide_index=True,
-            column_config={"Ссылка": st.column_config.LinkColumn("TikTok", display_text="Link"), "UTS": st.column_config.ProgressColumn("UTS", format="%.2f")}
-        )
+# === 2. НОВАЯ ФУНКЦИЯ ДЛЯ ТОП-3 (ВИРАЛЬНЫЙ ВИД) ===
+def render_top_card(item, rank):
+    medals = {1: "🥇", 2: "🥈", 3: "🥉"}
+    medal = medals.get(rank, "🏅")
+    
+    # Извлечение данных
+    if isinstance(item, dict):
+        cover = item.get("cover_url")
+        views = item["stats"].get("views", 0)
+        likes = item["stats"].get("likes", 0)
+        ai = item.get("ai_summary")
+        desc = item.get("description", "")
+        url = item.get("url")
     else:
-        st.info("Скрепер не нашел ничего нового (или всё отфильтровал).")
+        cover = item.cover_url
+        views = item.stats.get("views", 0)
+        likes = item.stats.get("likes", 0)
+        ai = item.ai_summary
+        desc = item.description
+        url = item.url
 
-    # === ТАБЛИЦА 2: АРХИВ ===
-    st.subheader("🗄️ Найдено в вашей Базе (Экономия токенов)")
-    if not df_archive.empty:
-        st.dataframe(
-            df_archive.drop(columns=["created_at"]),
-            use_container_width=True,
-            hide_index=True,
-            column_config={"Ссылка": st.column_config.LinkColumn("TikTok", display_text="Link"), "UTS": st.column_config.ProgressColumn("UTS", format="%.2f")}
-        )
+    # Отрисовка КРУПНОЙ карточки
+    with st.container(border=True):
+        st.markdown(f"### {medal} Место #{rank}")
+        
+        c1, c2 = st.columns([1, 2]) # Картинка слева, текст справа
+        
+        with c1:
+            # 🔥 И ЗДЕСЬ ТОЖЕ БЕЗОПАСНЫЙ РЕНДЕР
+            render_safe_image(cover)
+        
+        with c2:
+            st.markdown(f"## 👁 {views:,}")
+            st.markdown(f"**Лайки:** {likes:,}")
+            
+            if ai and len(str(ai)) > 5 and ai != "Pending":
+                st.info(f"🤖 **AI Инсайт:** {ai}")
+            else:
+                st.markdown(f"**Описание:** {desc[:150]}...")
+            
+            st.link_button("🔥 Смотреть Вирусное Видео", url, type="primary")
+
+# === ЛОГИКА СЕССИИ ===
+if 'profile_results' not in st.session_state:
+    st.session_state.profile_results = []
+if 'profile_nick' not in st.session_state:
+    st.session_state.profile_nick = ""
+
+# === САЙДБАР ===
+with st.sidebar:
+    st.title("🚀 TrendScout")
+    page = st.radio("Раздел", ["👤 Анализ Конкурента", "🌍 Поиск Трендов"])
+
+# ==========================================
+# 👤 СТРАНИЦА: АНАЛИЗ КОНКУРЕНТА
+# ==========================================
+if page == "👤 Анализ Конкурента":
+    st.title("👤 Разбор Конкурента")
+    
+    with st.container(border=True):
+        c1, c2 = st.columns([3, 1])
+        nick = c1.text_input("Никнейм (без @):", "diazharass")
+        if c2.button("🔥 Сканировать", type="primary"):
+            with st.spinner("Сканирую профиль..."):
+                results = run_analysis([nick], mode="profile")
+                if results:
+                    st.session_state.profile_results = results
+                    st.session_state.profile_nick = nick
+                    st.rerun()
+                else:
+                    st.error("Ничего не найдено или профиль закрыт.")
+
+    # ОТОБРАЖЕНИЕ РЕЗУЛЬТАТОВ
+    if st.session_state.profile_results:
+        results = st.session_state.profile_results
+        
+        # 1. СОРТИРОВКА
+        now = datetime.now()
+        year_ago = now - timedelta(days=365)
+        
+        year_videos = [
+            v for v in results 
+            if v.get('create_time') and datetime.fromtimestamp(v['create_time']) > year_ago
+        ]
+        if not year_videos: year_videos = results
+        
+        top_3_year = sorted(year_videos, key=lambda x: x["stats"]["views"], reverse=True)[:3]
+        
+        latest_30 = sorted(results, key=lambda x: x.get("create_time", 0), reverse=True)[:30]
+
+        # 2. ВКЛАДКИ
+        st.divider()
+        tab1, tab2 = st.tabs(["🏆 Топ-3 Хита (Год)", "🆕 Лента (Последние 30)"])
+        
+        with tab1:
+            st.subheader(f"🥇 Золотой фонд @{st.session_state.profile_nick}")
+            if top_3_year:
+                for i, video in enumerate(top_3_year):
+                    render_top_card(video, rank=i+1)
+            else:
+                st.info("Нет данных за последний год.")
+                
+        with tab2:
+            st.subheader("📅 Хронология публикаций")
+            render_grid(latest_30)
+
     else:
-        st.info("В базе не нашлось подходящих старых видео.")
+        st.info("Введите никнейм выше, чтобы начать.")
 
-if __name__ == "__main__":
-    render_dashboard()
+# ==========================================
+# 🌍 СТРАНИЦА: ПОИСК ТРЕНДОВ
+# ==========================================
+elif page == "🌍 Поиск Трендов":
+    st.title("🌍 Глобальный Поиск")
+    
+    with st.container(border=True):
+        c1, c2 = st.columns([2, 1])
+        k = c1.text_input("Тема (на англ):", "Travel")
+        d = c2.text_input("Контекст (для AI):", "Tours")
+        if st.button("🚀 Найти", type="primary"):
+            with st.spinner("Ищу, фильтрую и сохраняю..."):
+                run_analysis([k], business_desc=d, mode="search")
+                st.rerun()
+
+    db = get_db_session()
+    trends = db.query(Trend).filter(Trend.vertical == k).order_by(Trend.uts_score.desc()).limit(30).all()
+    db.close()
+
+    if trends:
+        st.subheader(f"Результаты по теме: {k}")
+        render_grid(trends)
+    else:
+        st.info("Введите тему для поиска.")
