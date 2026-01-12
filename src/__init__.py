@@ -1,1 +1,0 @@
-# TrendScout core package

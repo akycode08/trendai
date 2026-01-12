@@ -1,0 +1,25 @@
+{
+  "id": "7234567890123456789",
+  "channel": {
+    "id": "123456789",
+    "username": "anh.beautify",
+    "name": "Anh Beauty",
+    "avatar": "https://p16-sign-va.tiktokcdn.com/obj/tos-maliva-p-0068/o0YvBQgEJ1QBDDMFqX8Yq?x-expires=1234567890",
+    "followers": 1500000,
+    "verified": true
+  },
+  "video": {
+    "id": "7234567890123456789",
+    "url": "https://v16-webapp.tiktok.com/video/1234567890/",
+    "cover": "https://p16-sign-va.tiktokcdn.com/obj/tos-maliva-p-0068/o0YvBQgEJ1QBDDMFqX8Yq?x-expires=1234567890",
+    "thumbnail": "https://p16-sign-va.tiktokcdn.com/obj/tos-maliva-p-0068/o0YvBQgEJ1QBDDMFqX8Yq?x-expires=1234567890",
+    "duration": 15
+  },
+  "title": "Как сделать идеальный макияж за 5 минут 💄",
+  "views": 2500000,
+  "likes": 180000,
+  "comments": 12000,
+  "shares": 8500,
+  "uploadedAt": 1705123456,
+  "postPage": "https://www.tiktok.com/@anh.beautify/video/7234567890123456789"
+}

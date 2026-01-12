@@ -1,13 +1,13 @@
 streamlit>=1.28.0
 sqlalchemy>=2.0.0
 apify-client>=1.0.0
-google-generativeai>=0.3.0
+anthropic>=0.34.0
 python-dotenv>=1.0.0
 pandas>=2.0.0
 streamlit
 pandas
 apify-client
-google-generativeai
+anthropic
 python-dotenv
 sqlalchemy
 psycopg2-binary
