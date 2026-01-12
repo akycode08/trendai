@@ -1,5 +1,6 @@
 import sys
 import os
+import importlib
 # Добавляем корневую директорию проекта в sys.path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -9,6 +10,12 @@ import plotly.graph_objects as go
 import plotly.express as px
 from datetime import datetime, timedelta
 import datetime as dt
+
+# Принудительная перезагрузка модулей для обновления функции run_analysis
+if 'filtertrend.core.analysis' in sys.modules:
+    importlib.reload(sys.modules['filtertrend.core.analysis'])
+if 'filtertrend.core' in sys.modules:
+    importlib.reload(sys.modules['filtertrend.core'])
 from filtertrend.core import get_db_session, Trend, ProfileData, run_analysis
 import urllib.parse
 import os
@@ -1100,13 +1107,32 @@ elif page == "👤 Профиль Аккаунта":
 elif page == "🌍 Поиск Трендов":
     st.title("🌍 Глобальный Поиск")
     
+    # Получаем список всех профилей из БД для выбора
+    db_profiles = get_db_session()
+    all_profiles = db_profiles.query(ProfileData.username).order_by(ProfileData.username).all()
+    db_profiles.close()
+    profile_options = [""] + [p[0] for p in all_profiles]  # Первый вариант - пустой (не использовать профиль)
+    
     with st.container(border=True):
         c1, c2 = st.columns([2, 1])
         k = c1.text_input("Тема (на англ):", "Travel")
-        d = c2.text_input("Контекст (для AI):", "Tours")
+        
+        # Выбор профиля для anchor
+        selected_profile = c2.selectbox(
+            "👤 Профиль для Anchor (опционально):",
+            options=profile_options,
+            index=0,
+            help="Выберите профиль аккаунта, который будет использоваться как anchor (эталон) для поиска похожих трендов. Если не выбран, можно использовать текстовое описание ниже."
+        )
+        
+        # Текстовое описание (fallback, если профиль не выбран)
+        d = st.text_input("Контекст (для AI) - если профиль не выбран:", "Tours", help="Используется только если профиль не выбран")
+        
         if st.button("🚀 Найти", type="primary"):
             with st.spinner("Ищу, фильтрую и сохраняю..."):
-                run_analysis([k], business_desc=d, mode="search")
+                # Передаем anchor_profile_username если профиль выбран
+                anchor_username = selected_profile if selected_profile else ""
+                run_analysis([k], business_desc=d, anchor_profile_username=anchor_username, mode="search")
                 st.rerun()
 
     db = get_db_session()
@@ -1115,6 +1141,18 @@ elif page == "🌍 Поиск Трендов":
 
     if trends:
         st.subheader(f"Результаты по теме: {k}")
-        render_grid(trends)
+        # Преобразуем объекты Trend в словари для render_grid
+        trends_dicts = []
+        for trend in trends:
+            stats = trend.stats if isinstance(trend.stats, dict) else {}
+            trend_dict = {
+                "stats": stats,
+                "description": trend.description or "",
+                "url": trend.url or "",
+                "cover_url": trend.cover_url or "",
+                "ai_summary": trend.ai_summary or ""
+            }
+            trends_dicts.append(trend_dict)
+        render_grid(trends_dicts)
     else:
         st.info("Введите тему для поиска.")

@@ -13,7 +13,7 @@ from PIL import Image
 import requests
 import torch
 
-from filtertrend.core import Trend, get_db_session
+from filtertrend.core import Trend, ProfileData, get_db_session
 from filtertrend.services import TikTokCollector, ViralContentFilter, TrendScorer
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -62,6 +62,85 @@ def get_image_embedding(image_url):
             outputs = clip_model.get_image_features(**inputs)
         return outputs.squeeze().numpy().tolist()
     except: return None
+
+def get_anchor_vector_from_profile(profile_username):
+    """
+    Создает anchor-вектор из профиля аккаунта.
+    Берет все обложки видео из профиля, создает векторы и усредняет их.
+    
+    Args:
+        profile_username: username профиля (будет нормализован)
+    
+    Returns:
+        Усредненный вектор из всех обложек видео профиля, или None если профиль не найден
+    """
+    if not profile_username:
+        return None
+    
+    try:
+        db = get_db_session()
+        # Нормализуем username
+        clean_username = normalize_username(profile_username)
+        
+        # Получаем профиль из БД
+        profile = db.query(ProfileData).filter(ProfileData.username == clean_username).first()
+        db.close()
+        
+        if not profile or not profile.raw_data:
+            print(f"⚠️ Профиль {clean_username} не найден в БД или нет видео")
+            return None
+        
+        raw_data = profile.raw_data if isinstance(profile.raw_data, list) else []
+        if not raw_data:
+            print(f"⚠️ Профиль {clean_username} не содержит видео")
+            return None
+        
+        # Собираем все обложки видео
+        cover_urls = []
+        for video in raw_data:
+            # Формат Apify: video.videoMeta.cover
+            cover_url = None
+            if isinstance(video, dict):
+                # Пробуем разные форматы
+                if "video" in video and isinstance(video["video"], dict):
+                    cover_url = video["video"].get("cover") or video["video"].get("thumbnail")
+                elif "videoMeta" in video and isinstance(video["videoMeta"], dict):
+                    cover_url = video["videoMeta"].get("cover")
+                elif "cover" in video:
+                    cover_url = video["cover"]
+                elif "coverUrl" in video:
+                    cover_url = video["coverUrl"]
+            
+            if cover_url and isinstance(cover_url, str) and cover_url.strip():
+                cover_urls.append(cover_url.strip())
+        
+        if not cover_urls:
+            print(f"⚠️ В профиле {clean_username} нет обложек видео")
+            return None
+        
+        print(f"📸 Создаю anchor из {len(cover_urls)} обложек профиля {clean_username}...")
+        
+        # Создаем векторы для каждой обложки
+        vectors = []
+        for cover_url in cover_urls[:20]:  # Ограничиваем 20 обложками для скорости
+            vec = get_image_embedding(cover_url)
+            if vec:
+                vectors.append(np.array(vec))
+        
+        if not vectors:
+            print(f"⚠️ Не удалось создать векторы из обложек профиля {clean_username}")
+            return None
+        
+        # Усредняем все векторы (среднее арифметическое)
+        avg_vector = np.mean(vectors, axis=0)
+        anchor_vector = avg_vector.tolist()
+        
+        print(f"✅ Anchor-вектор создан из {len(vectors)} обложек")
+        return anchor_vector
+        
+    except Exception as e:
+        print(f"⚠️ Ошибка создания anchor из профиля {profile_username}: {e}")
+        return None
 
 def normalize_username(username_or_url):
     """Извлекает username из URL или возвращает username как есть"""
@@ -124,17 +203,28 @@ def download_image_for_claude(url):
     return None
 
 # --- ГЛАВНАЯ ЛОГИКА ---
-def run_analysis(keywords, business_desc="", mode="search"):
+def run_analysis(keywords, business_desc="", anchor_profile_username="", mode="search"):
     run_id = datetime.now().strftime("%Y-%m-%d %H:%M")
     if not keywords: return []
 
     print(f"\n🚀 ЗАПУСК (Mode: {mode}): {keywords}")
     scorer = TrendScorer()
     
-    # Вектор бизнеса (ТОЛЬКО ДЛЯ ПОИСКА)
+    # Вектор бизнеса (anchor) - ТОЛЬКО ДЛЯ ПОИСКА
     anchor_vector = None
-    if mode == "search" and business_desc:
-        anchor_vector = get_text_embedding(business_desc)
+    if mode == "search":
+        # Приоритет: профиль аккаунта > текстовое описание
+        if anchor_profile_username:
+            anchor_vector = get_anchor_vector_from_profile(anchor_profile_username)
+            if anchor_vector:
+                print(f"✅ Используем anchor из профиля: {anchor_profile_username}")
+            else:
+                print(f"⚠️ Не удалось создать anchor из профиля {anchor_profile_username}, пробуем текстовое описание...")
+                if business_desc:
+                    anchor_vector = get_text_embedding(business_desc)
+        elif business_desc:
+            # Fallback: текстовое описание (старый способ)
+            anchor_vector = get_text_embedding(business_desc)
     
     # 1. СКАЧИВАЕМ (Лимит 30)
     raw_items = []
