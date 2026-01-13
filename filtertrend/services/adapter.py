@@ -23,6 +23,26 @@ def adapt_apidojo_to_standard(item):
             # Извлекаем картинку из плоских ключей
             cover_url = item.get("video.cover") or item.get("video.thumbnail")
             
+            # Извлекаем хэштеги и музыку из исходных данных
+            hashtags = item.get("hashtags", [])
+            if isinstance(hashtags, list):
+                hashtags = [tag for tag in hashtags if tag and isinstance(tag, str)]
+            else:
+                hashtags = []
+            
+            song = item.get("song")
+            if song and isinstance(song, dict):
+                song_data = {
+                    "id": song.get("id"),
+                    "title": song.get("title", ""),
+                    "artist": song.get("artist", ""),
+                    "album": song.get("album"),
+                    "duration": song.get("duration", 0),
+                    "cover": song.get("cover")
+                }
+            else:
+                song_data = None
+            
             return {
                 "id": item.get("id"),
                 "webVideoUrl": item.get("postPage") or item.get("video.url"),
@@ -42,7 +62,9 @@ def adapt_apidojo_to_standard(item):
                 },
                 "stats": stats,
                 "playCount": stats["playCount"],
-                "diggCount": stats["diggCount"]
+                "diggCount": stats["diggCount"],
+                "hashtags": hashtags,  # Сохраняем хэштеги
+                "song": song_data  # Сохраняем музыку
             }
 
         # --- ВАРИАНТ 1: Новый формат (Вложенные словари) ---
@@ -57,6 +79,26 @@ def adapt_apidojo_to_standard(item):
                 "shareCount": item.get("shares", 0)
             }
 
+            # Извлекаем хэштеги и музыку из исходных данных
+            hashtags = item.get("hashtags", [])
+            if isinstance(hashtags, list):
+                hashtags = [tag for tag in hashtags if tag and isinstance(tag, str)]
+            else:
+                hashtags = []
+            
+            song = item.get("song")
+            if song and isinstance(song, dict):
+                song_data = {
+                    "id": song.get("id"),
+                    "title": song.get("title", ""),
+                    "artist": song.get("artist", ""),
+                    "album": song.get("album"),
+                    "duration": song.get("duration", 0),
+                    "cover": song.get("cover")
+                }
+            else:
+                song_data = None
+            
             return {
                 "id": item.get("id"),
                 "webVideoUrl": item.get("postPage") or video_data.get("url"),
@@ -76,7 +118,9 @@ def adapt_apidojo_to_standard(item):
                 },
                 "stats": stats,
                 "playCount": stats["playCount"],
-                "diggCount": stats["diggCount"]
+                "diggCount": stats["diggCount"],
+                "hashtags": hashtags,  # Сохраняем хэштеги
+                "song": song_data  # Сохраняем музыку
             }
 
         # --- ВАРИАНТ 2: Старый формат (Legacy) ---
@@ -90,6 +134,26 @@ def adapt_apidojo_to_standard(item):
                     "commentCount": item.get("commentCount", 0),
                     "shareCount": item.get("shareCount", 0)
                 }
+            
+            # Извлекаем хэштеги и музыку из исходных данных
+            hashtags = item.get("hashtags", [])
+            if isinstance(hashtags, list):
+                hashtags = [tag for tag in hashtags if tag and isinstance(tag, str)]
+            else:
+                hashtags = []
+            
+            song = item.get("song") or item.get("music")
+            if song and isinstance(song, dict):
+                song_data = {
+                    "id": song.get("id"),
+                    "title": song.get("title", ""),
+                    "artist": song.get("artist", "") or song.get("author", ""),
+                    "album": song.get("album"),
+                    "duration": song.get("duration", 0),
+                    "cover": song.get("cover")
+                }
+            else:
+                song_data = None
             
             return {
                 "id": item.get("id"),
@@ -110,7 +174,9 @@ def adapt_apidojo_to_standard(item):
                 },
                 "stats": stats,
                 "playCount": stats["playCount"],
-                "diggCount": stats["diggCount"]
+                "diggCount": stats["diggCount"],
+                "hashtags": hashtags,  # Сохраняем хэштеги
+                "song": song_data  # Сохраняем музыку
             }
 
     except Exception as e:

@@ -17,6 +17,7 @@ if 'filtertrend.core.analysis' in sys.modules:
 if 'filtertrend.core' in sys.modules:
     importlib.reload(sys.modules['filtertrend.core'])
 from filtertrend.core import get_db_session, Trend, ProfileData, run_analysis
+from filtertrend.core.graph import get_graph
 import urllib.parse
 import os
 from dotenv import load_dotenv
@@ -988,11 +989,74 @@ elif page == "👤 Профиль Аккаунта":
         else:
             st.info("Нет данных")
         
-        # === СЕКЦИЯ 5: TOP HASHTAGS ===
+        # === СЕКЦИЯ 5: TOP HASHTAGS (Neo4j + Raw Data) ===
         st.divider()
         st.subheader("🏷️ Топ хэштеги")
         
-        # Собираем все хэштеги
+        # Пробуем получить из Neo4j
+        graph = get_graph()
+        neo4j_hashtags = []
+        if graph and graph.driver:
+            try:
+                with graph.driver.session() as session:
+                    result = session.run("""
+                        MATCH (p:Profile {username: $username})<-[:CREATED_BY]-(v:Video)-[:TAGGED_WITH]->(h:Hashtag)
+                        RETURN h.name, count(v) as video_count, avg(v.views) as avg_views
+                        ORDER BY video_count DESC
+                        LIMIT 10
+                    """, username=st.session_state.profile_nick.lower())
+                    
+                    for record in result:
+                        neo4j_hashtags.append({
+                            'name': record['h.name'],
+                            'count': record['video_count'],
+                            'avg_views': int(record['avg_views'])
+                        })
+            except:
+                pass
+        
+        # Если есть данные из Neo4j - показываем их
+        if neo4j_hashtags:
+            cols = st.columns(3)
+            for i, tag in enumerate(neo4j_hashtags[:9]):
+                with cols[i % 3]:
+                    st.metric(
+                        f"#{tag['name']}",
+                        f"{tag['count']} видео",
+                        f"Ø {format_number(tag['avg_views'])} просмотров"
+                    )
+            st.markdown("---")
+        
+        # === NEO4J АНАЛИТИКА ПРОФИЛЯ ===
+        if graph and graph.driver and st.session_state.profile_nick:
+            try:
+                st.divider()
+                st.subheader("📊 Графовая аналитика")
+                
+                # Конкуренты
+                competitors = graph.find_competitors(st.session_state.profile_nick.lower(), limit=5)
+                if competitors:
+                    st.markdown("**🎯 Конкуренты** (используют те же хэштеги):")
+                    for comp in competitors:
+                        st.write(f"- **@{comp['username']}** - {comp['common_hashtags']} общих хэштегов, {format_number(int(comp['avg_views']))} средние просмотры")
+                
+                # Влияющие профили
+                influencers = graph.find_influencers(st.session_state.profile_nick.lower(), limit=5)
+                if influencers:
+                    st.markdown("**👑 Влияющие профили** (использовали хэштеги раньше):")
+                    for inf in influencers:
+                        st.write(f"- **@{inf['username']}** - влияние: {inf['influence_score']}")
+                
+                # Сеть хэштегов
+                hashtag_network = graph.get_profile_hashtag_network(st.session_state.profile_nick.lower())
+                if hashtag_network.get('pairs'):
+                    st.markdown("**🤝 Пары хэштегов профиля** (используются вместе):")
+                    for pair in hashtag_network['pairs'][:5]:
+                        st.write(f"- **#{pair['hashtag1']}** + **#{pair['hashtag2']}** - {pair['together_count']} раз")
+            except:
+                pass
+        
+        # Fallback: собираем все хэштеги из raw_data
         hashtag_stats = {}
         for item in raw_data:
             hashtags = item.get("hashtags", [])
@@ -1141,6 +1205,58 @@ elif page == "🌍 Поиск Трендов":
 
     if trends:
         st.subheader(f"Результаты по теме: {k}")
+        
+        # === NEO4J АНАЛИТИКА ===
+        graph = get_graph()
+        if graph and graph.driver:
+            try:
+                # Топ хэштегов для тренда
+                with graph.driver.session() as session:
+                    hashtag_result = session.run("""
+                        MATCH (t:Trend {vertical: $vertical})<-[:BELONGS_TO]-(v:Video)-[:TAGGED_WITH]->(h:Hashtag)
+                        RETURN h.name, count(v) as video_count, avg(v.views) as avg_views
+                        ORDER BY video_count DESC
+                        LIMIT 10
+                    """, vertical=k.lower())
+                    
+                    hashtags_data = []
+                    for record in hashtag_result:
+                        hashtags_data.append({
+                            'name': record['h.name'],
+                            'count': record['video_count'],
+                            'avg_views': int(record['avg_views'])
+                        })
+                    
+                    if hashtags_data:
+                        st.divider()
+                        st.subheader("🏷️ Топ хэштегов (Neo4j)")
+                        cols = st.columns(3)
+                        for i, tag in enumerate(hashtags_data[:9]):
+                            with cols[i % 3]:
+                                st.metric(
+                                    f"#{tag['name']}",
+                                    f"{tag['count']} видео",
+                                    f"Ø {format_number(tag['avg_views'])} просмотров"
+                                )
+                
+                # Связанные тренды
+                related_trends = graph.find_related_trends(k.lower(), limit=5)
+                if related_trends:
+                    st.divider()
+                    st.subheader("🔗 Связанные тренды")
+                    for trend in related_trends:
+                        st.write(f"**{trend['vertical']}** - {trend['common_hashtags']} общих хэштегов")
+                
+                # Пары хэштегов вместе
+                hashtag_pairs = graph.find_trending_hashtag_pairs(limit=5)
+                if hashtag_pairs:
+                    st.divider()
+                    st.subheader("🤝 Хэштеги вместе")
+                    for pair in hashtag_pairs:
+                        st.write(f"**#{pair['hashtag1']}** + **#{pair['hashtag2']}** - {pair['together_count']} раз вместе")
+            except Exception as e:
+                pass  # Тихая ошибка
+        
         # Преобразуем объекты Trend в словари для render_grid
         trends_dicts = []
         for trend in trends:

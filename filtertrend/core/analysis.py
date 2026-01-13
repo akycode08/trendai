@@ -14,6 +14,7 @@ import requests
 import torch
 
 from filtertrend.core import Trend, ProfileData, get_db_session
+from filtertrend.core.graph import get_graph
 from filtertrend.services import TikTokCollector, ViralContentFilter, TrendScorer
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -372,6 +373,41 @@ def run_analysis(keywords, business_desc="", anchor_profile_username="", mode="s
                     except Exception as e:
                         print(f"⚠️ Ошибка сохранения в БД: {e}")
                 
+                # === NEO4J ИНТЕГРАЦИЯ (опционально, не блокирует) ===
+                try:
+                    graph = get_graph()
+                    if graph and graph.driver:
+                        username = item.get("authorMeta", {}).get("name", "")
+                        if username:
+                            # Адаптируем stats для Neo4j (views, likes, comments, shares)
+                            stats_for_graph = {
+                                "views": views,
+                                "likes": likes,
+                                "comments": int(stats.get("commentCount", 0)),
+                                "shares": int(stats.get("shareCount", 0))
+                            }
+                            
+                            video_data_for_graph = {
+                                "stats": stats_for_graph,
+                                "description": text_desc,
+                                "cover_url": cover_url,
+                                "hashtags": item.get("hashtags", []),  # Из адаптированных данных
+                                "song": item.get("song"),  # Из адаптированных данных
+                                "uts_score": 0.0,  # Для профилей не считаем
+                                "created_at": item.get("createTime", 0)  # Таймштамп
+                            }
+                            
+                            # Сохраняем в Neo4j со всеми связями
+                            graph.save_video_with_relationships(
+                                video_url=url,
+                                video_data=video_data_for_graph,
+                                username=username.lower(),
+                                vertical=None  # Для профилей vertical не используется
+                            )
+                except Exception as e:
+                    # Neo4j ошибки не блокируют основной процесс
+                    pass  # Тихая ошибка для профилей
+                
                 results.append({
                     "url": url,
                     "cover_url": cover_url,
@@ -493,7 +529,58 @@ def run_analysis(keywords, business_desc="", anchor_profile_username="", mode="s
             db.add(new_trend)
             processed_trends.append(new_trend)
             print(f"✅ Saved DB: {views} | UTS: {transfer_score:.2f}")
+            
+            # === NEO4J ИНТЕГРАЦИЯ (опционально, не блокирует) ===
+            try:
+                graph = get_graph()
+                if graph and graph.driver:
+                    # Подготавливаем данные для Neo4j
+                    username = item.get("authorMeta", {}).get("name", "")
+                    if username:
+                        # Адаптируем stats для Neo4j (views, likes, comments, shares)
+                        stats_for_graph = {
+                            "views": views,
+                            "likes": likes,
+                            "comments": int(stats.get("commentCount", 0)),
+                            "shares": int(stats.get("shareCount", 0))
+                        }
+                        
+                        video_data_for_graph = {
+                            "stats": stats_for_graph,
+                            "description": text_desc,
+                            "cover_url": cover_url,
+                            "hashtags": item.get("hashtags", []),  # Из адаптированных данных
+                            "song": item.get("song"),  # Из адаптированных данных
+                            "uts_score": transfer_score,  # UTS для поиска
+                            "created_at": item.get("createTime", 0)  # Таймштамп
+                        }
+                        
+                        # Сохраняем в Neo4j со всеми связями
+                        graph.save_video_with_relationships(
+                            video_url=url,
+                            video_data=video_data_for_graph,
+                            username=username.lower(),
+                            vertical=keywords[0] if keywords else None
+                        )
+                        print(f"  📊 Neo4j: сохранено")
+            except Exception as e:
+                # Neo4j ошибки не блокируют основной процесс
+                print(f"  ⚠️ Neo4j: {e}")
 
         db.commit()
+        
+        # Преобразуем объекты в словари перед закрытием сессии
+        trends_dicts = []
+        for trend in processed_trends:
+            stats = trend.stats if isinstance(trend.stats, dict) else {}
+            trends_dicts.append({
+                "url": trend.url,
+                "cover_url": trend.cover_url,
+                "description": trend.description,
+                "stats": stats,
+                "uts_score": trend.uts_score,
+                "ai_summary": trend.ai_summary
+            })
+        
         db.close()
-        return processed_trends
+        return trends_dicts
